@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 import ta
 import logging
+import requests
 from tenacity import retry, stop_after_attempt, wait_fixed
 from datetime import datetime
 import numpy as np
@@ -49,12 +50,29 @@ def get_yf_ticker(coin_id, vs_currency):
     return f"{coin_map[coin_id.lower()]}-{currency_map[vs_currency.lower()]}"
 
 def get_historical_data(coin_id, vs_currency):
-    ticker = get_yf_ticker(coin_id, vs_currency)
-    data = yf.download(ticker, period='3mo', interval='1h')
-    data.rename(columns={"Adj Close": "close"}, inplace=True)
-    data = data[['close']]
-    data.reset_index(inplace=True)
-    return data
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {
+        'symbol': 'BTCUSDT',
+        'interval': '1m',
+        'limit': 1000  # Số lượng nến muốn lấy
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 
+        'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 
+        'taker_buy_quote_asset_volume', 'ignore'
+    ])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert('Asia/Bangkok')
+    df.rename(columns={"close": "Adj Close"}, inplace=True)
+    df.set_index('timestamp', inplace=True)
+    df['Adj Close'] = df['Adj Close'].astype(float)
+    
+    df.reset_index(inplace=True)
+    df = df[['timestamp', 'Adj Close']]
+    df.rename(columns={"timestamp": "Datetime", "Adj Close": "close"}, inplace=True)
+    
+    return df
 
 def train_model_once(coin_id, vs_currency, features):
     global model, scaler, training_data_len, dataset, model_trained
@@ -130,10 +148,10 @@ async def append_real_time_data(symbol):
         # Kiểm tra trùng lặp dữ liệu theo timestamp
         if new_row.index[-1] not in data.index:
             data = pd.concat([data, new_row])
-            data = add_features(data, ['ROC'])
-            logging.info(f"Appended new row, total records: {len(data)}")
+        data = add_features(data, ['ROC'])
+        logging.info(f"Appended new row, total records: {len(data)}")
             
-            await asyncio.to_thread(data[['close']].to_csv, file_path, mode='w', header=True, index=True)
+        await asyncio.to_thread(data[['close']].to_csv, file_path, mode='w', header=True, index=True)
         return data
 
 def make_predictions(data, num_predictions=5):

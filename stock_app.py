@@ -204,11 +204,11 @@ app.layout = html.Div([
                         type="default",
                         children=[dcc.Graph(id='real-time-graph')]
                     ),
-                    dcc.Interval(
-                        id='interval-component',
-                        interval=1*60*1000,  # Cập nhật mỗi phút
-                        n_intervals=0
-                    )
+                    # dcc.Interval(
+                    #     id='interval-component',
+                    #     interval=1*60*1000,  # Cập nhật mỗi phút
+                    #     n_intervals=0
+                    # )
                 ], className="container"),
             ],
             style=CSS1)
@@ -377,10 +377,10 @@ def clean_csv_file(file_path):
 @app.callback(
     Output('real-time-graph', 'figure'),
     [Input('tabs-example', 'value'), 
-    Input('interval-component', 'n_intervals')
+    # Input('interval-component', 'n_intervals')
     ]
 )
-def update_real_time_graph(selected_tab, n_intervals):
+def update_real_time_graph(selected_tab):
     if selected_tab == 'tab-2':
         # Start fetching real-time data in a separate thread
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -407,9 +407,10 @@ def update_real_time_graph(selected_tab, n_intervals):
                 updated_data.index = pd.to_datetime(updated_data.index, utc=True).tz_convert('Asia/Bangkok')
                 
                 # Lọc dữ liệu để chỉ hiển thị giá của ngày hiện tại
-                now = datetime.now(pytz.timezone('Asia/Bangkok'))
-                today = now.date()
-                updated_data = updated_data[updated_data.index.date == today]
+                # now = datetime.now(pytz.timezone('Asia/Bangkok'))
+                # today = now.date()
+                # updated_data = updated_data[updated_data.index.date == today]
+                updated_data = updated_data.tail(60)
                
                 trace = go.Scatter(x=updated_data.index, y=updated_data['close'], mode='markers+lines', name='Real-time BTC-USD')
 
@@ -448,7 +449,7 @@ if __name__ == '__main__':
     if not os.path.exists('real_time_data.csv') or os.stat('real_time_data.csv').st_size == 0:
         historical_data = get_historical_data('bitcoin', 'usd')
         historical_data.rename(columns={"Datetime": "timestamp"}, inplace=True)
-        historical_data['timestamp'] = pd.to_datetime(historical_data['timestamp'], utc=True).dt.tz_convert('Asia/Bangkok')
+        # historical_data['timestamp'] = pd.to_datetime(historical_data['timestamp'], utc=True).dt.tz_convert('Asia/Bangkok')
         historical_data.to_csv('real_time_data.csv', index=False)
 
     app.run_server(debug=True, port=3000)
