@@ -12,10 +12,6 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
 from keras.layers import Dense, LSTM, Dropout
-from threading import Lock
-
-# Khởi tạo đối tượng Lock
-csv_lock = Lock()
 
 # Thiết lập logging
 logging.basicConfig(level=logging.INFO)
@@ -111,20 +107,19 @@ async def fetch_real_time_data(symbol, interval='1m'):
             kline = data_json['k']
             if kline['x']:
                 new_data = {
-                    'timestamp': pd.to_datetime(kline['t'], unit='ms'),
+                    'timestamp': pd.to_datetime(kline['t'], unit='ms', utc=True).tz_convert('Asia/Bangkok'),
                     'close': float(kline['c'])
                 }
-                # logging.info(f"Received new data: {new_data}")
+                logging.info(f"Received new data: {new_data}")
                 yield new_data
 
-async def append_real_time_data_and_predict(symbol, num_predictions=5):
+async def append_real_time_data(symbol):
     file_path = 'real_time_data.csv'
     
     # Kiểm tra nếu file CSV tồn tại và có dữ liệu
-    with csv_lock:
-        if os.path.exists(file_path) and os.stat(file_path).st_size != 0:
+    if os.path.exists(file_path) and os.stat(file_path).st_size != 0:
             data = pd.read_csv(file_path, parse_dates=['timestamp'], index_col='timestamp')
-        else:
+    else:
             data = pd.DataFrame(columns=['timestamp', 'close'])
             data.set_index('timestamp', inplace=True)
     
@@ -138,27 +133,26 @@ async def append_real_time_data_and_predict(symbol, num_predictions=5):
             data = add_features(data, ['ROC'])
             logging.info(f"Appended new row, total records: {len(data)}")
             
-            with csv_lock:
-                # Lưu lại toàn bộ dữ liệu vào file CSV (loại bỏ trùng lặp)
-                data = data[~data.index.duplicated(keep='last')]
-                data[['close']].to_csv(file_path, mode='w', header=True, index=True)
-        
-        predictions = []
-        last_60_candles = data[-60:].values
-        
-        for _ in range(num_predictions):
-            scaled_data = scaler.transform(last_60_candles)
-            X_test = np.reshape(scaled_data, (1, 60, scaled_data.shape[1]))
-            
-            # Dự đoán giá nến kế tiếp
-            predicted_price_scaled = model.predict(X_test)
-            predicted_price = scaler.inverse_transform(
-                np.concatenate((predicted_price_scaled, np.zeros((predicted_price_scaled.shape[0], scaled_data.shape[1] - 1))), axis=1)
-            )[:, 0]
-            
-            predictions.append(predicted_price[0])
-            
-            # Thêm giá trị dự đoán vào last_60_candles để dự đoán giá trị tiếp theo
-            last_60_candles = np.append(last_60_candles[1:], [[predicted_price[0], last_60_candles[-1][1]]], axis=0)
-        
-        return predictions
+            await asyncio.to_thread(data[['close']].to_csv, file_path, mode='w', header=True, index=True)
+        return data
+
+def make_predictions(data, num_predictions=5):
+    predictions = []
+    last_60_candles = data[-60:].values
+
+    for _ in range(num_predictions):
+        scaled_data = scaler.transform(last_60_candles)
+        X_test = np.reshape(scaled_data, (1, 60, scaled_data.shape[1]))
+
+        # Dự đoán giá nến kế tiếp
+        predicted_price_scaled = model.predict(X_test)
+        predicted_price = scaler.inverse_transform(
+            np.concatenate((predicted_price_scaled, np.zeros((predicted_price_scaled.shape[0], scaled_data.shape[1] - 1))), axis=1)
+        )[:, 0]
+
+        predictions.append(predicted_price[0])
+
+        # Thêm giá trị dự đoán vào last_60_candles để dự đoán giá trị tiếp theo
+        last_60_candles = np.append(last_60_candles[1:], [[predicted_price[0], last_60_candles[-1][1]]], axis=0)
+
+    return predictions

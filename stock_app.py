@@ -5,17 +5,14 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 import pandas as pd
 from dash.dependencies import Input, Output, State
-from utils import append_real_time_data_and_predict, train_model_once, get_historical_data, fetch_real_time_data
+from utils import train_model_once, get_historical_data, fetch_real_time_data, append_real_time_data, make_predictions
 import asyncio
 import logging
 import concurrent.futures
 import os
+import numpy as np
 import pytz
 from datetime import datetime
-from threading import Lock
-
-# Khởi tạo đối tượng Lock
-csv_lock = Lock()
 
 # Tạo ra một app (web server)
 app = dash.Dash(external_stylesheets=[dbc.themes.BOOTSTRAP, "https://use.fontawesome.com/releases/v5.10.0/css/all.css"])
@@ -207,11 +204,11 @@ app.layout = html.Div([
                         type="default",
                         children=[dcc.Graph(id='real-time-graph')]
                     ),
-                    # dcc.Interval(
-                    #     id='interval-component',
-                    #     interval=1*60*1000,  # Cập nhật mỗi phút
-                    #     n_intervals=0
-                    # )
+                    dcc.Interval(
+                        id='interval-component',
+                        interval=1*60*1000,  # Cập nhật mỗi phút
+                        n_intervals=0
+                    )
                 ], className="container"),
             ],
             style=CSS1)
@@ -380,10 +377,10 @@ def clean_csv_file(file_path):
 @app.callback(
     Output('real-time-graph', 'figure'),
     [Input('tabs-example', 'value'), 
-    # Input('interval-component', 'n_intervals')
+    Input('interval-component', 'n_intervals')
     ]
 )
-def update_real_time_graph(selected_tab):
+def update_real_time_graph(selected_tab, n_intervals):
     if selected_tab == 'tab-2':
         # Start fetching real-time data in a separate thread
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -394,32 +391,29 @@ def update_real_time_graph(selected_tab):
             open('real_time_data.csv', 'w').close()
 
         # Đảm bảo đồng bộ khi đọc file CSV
-        with csv_lock:
-            try:
+        try:
                 data = pd.read_csv('real_time_data.csv', parse_dates=['timestamp'], index_col='timestamp')
 
                 # Chuyển đổi index thành DatetimeIndex nếu chưa phải
                 data.index = pd.to_datetime(data.index, errors='coerce', format='%Y-%m-%d %H:%M:%S')
                 data = data.dropna()  # Bỏ các hàng có giá trị thời gian không hợp lệ
 
-                # Chuyển đổi múi giờ sang GMT+7
-                if data.index.tz is None:
-                    data.index = data.index.tz_localize('UTC').tz_convert('Asia/Bangkok')
-                else:
-                    data.index = data.index.tz_convert('Asia/Bangkok')
-
                 # Append real-time data and make predictions
                 num_predictions = 10
-                predictions = asyncio.run(append_real_time_data_and_predict('btcusdt', num_predictions))
+                updated_data = asyncio.run(append_real_time_data('btcusdt'))
+                predictions = make_predictions(updated_data, num_predictions)
+
+                # Chuyển đổi index về kiểu datetime
+                updated_data.index = pd.to_datetime(updated_data.index, utc=True).tz_convert('Asia/Bangkok')
                 
                 # Lọc dữ liệu để chỉ hiển thị giá của ngày hiện tại
                 now = datetime.now(pytz.timezone('Asia/Bangkok'))
                 today = now.date()
-                data = data[data.index.date == today]
+                updated_data = updated_data[updated_data.index.date == today]
+               
+                trace = go.Scatter(x=updated_data.index, y=updated_data['close'], mode='markers+lines', name='Real-time BTC-USD')
 
-                trace = go.Scatter(x=data.index, y=data['close'], mode='markers+lines', name='Real-time BTC-USD')
-
-                start_time = data.index[-1] + pd.Timedelta(minutes=1)
+                start_time = updated_data.index[-1] + pd.Timedelta(minutes=1)
                 prediction_times = pd.date_range(start=start_time, periods=len(predictions), freq='1min')
                 trace_next_predictions = go.Scatter(x=prediction_times,
                                                    y=predictions,
@@ -433,11 +427,12 @@ def update_real_time_graph(selected_tab):
                                               xaxis={"title": "Date", "tickformat": "%H:%M"},
                                               yaxis={"title": "Price (USD)"})}
                 return figure
-            except pd.errors.EmptyDataError:
+        except pd.errors.EmptyDataError:
                 # Nếu tệp trống, không cập nhật đồ thị
                 return go.Figure()
 
     return go.Figure()
+
 
 def start_event_loop():
     loop = asyncio.new_event_loop()
@@ -453,6 +448,7 @@ if __name__ == '__main__':
     if not os.path.exists('real_time_data.csv') or os.stat('real_time_data.csv').st_size == 0:
         historical_data = get_historical_data('bitcoin', 'usd')
         historical_data.rename(columns={"Datetime": "timestamp"}, inplace=True)
+        historical_data['timestamp'] = pd.to_datetime(historical_data['timestamp'], utc=True).dt.tz_convert('Asia/Bangkok')
         historical_data.to_csv('real_time_data.csv', index=False)
 
     app.run_server(debug=True, port=3000)
